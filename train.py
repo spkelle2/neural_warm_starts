@@ -49,6 +49,7 @@ def train_and_evaluate(
         raise ValueError(
             'eval_every_steps is not divisible by num_train_run_steps')
 
+    # read in data Todo: how to generate tfrecord file and data inside it
     train_ds_all = []
     for path, _ in train_datasets:
         train_ds = data_utils.get_dataset(path)
@@ -62,16 +63,23 @@ def train_and_evaluate(
     valid_data = tf.data.Dataset.sample_from_datasets(valid_ds_all)
 
     with strategy.scope():
+        # instantiate the NN model (but don't build) and the optimizer objects
         model = light_gnn.get_model(**model_config.params)
+        # set global step as tf variable so it can be tracked with checkpoints
         global_step = tf.Variable(
             0, trainable=False, name='global_step', dtype=tf.int64)
+        # shrinks the step size as we progress
         lr_schedule = tf.optimizers.schedules.ExponentialDecay(
             initial_learning_rate=learning_rate,
             decay_steps=decay_steps,
             decay_rate=0.9)
         optimizer = snt.optimizers.Adam(learning_rate)
+
+        # ratio predictions match labels
         train_acc_metric = tf.keras.metrics.BinaryAccuracy(threshold=0.5)
         valid_acc_metric = tf.keras.metrics.BinaryAccuracy(threshold=0.5)
+
+        # Area under curve metric
         train_auc_metric = tf.keras.metrics.AUC()
         valid_auc_metric = tf.keras.metrics.AUC()
 
@@ -83,6 +91,7 @@ def train_and_evaluate(
             logging.info('retracing step_fn')
 
             with tf.GradientTape() as tape:
+                # run the __call__ function of the NeuralLnsLightGNN
                 logits = model(
                     ds_tuple.graphs_tuple,
                     is_training=True,
@@ -122,6 +131,7 @@ def train_and_evaluate(
 
         losses = []
         for _ in range(num_train_run_steps):
+            # use cpu/gpu to take a step against the next input data set
             per_replica_losses = strategy.run(
                 step_fn, args=(next(train_inputs),))
             loss = strategy.reduce(
@@ -172,14 +182,18 @@ def train_and_evaluate(
             valid_losses.append(valid_loss)
         return tf.reduce_mean(valid_losses)
 
+    # change execution from eager to graph for better performance
     if use_tf_function:
         train_step = tf.function(train_step)
         eval_step = tf.function(eval_step)
 
+    # model, optimizer and global step are all tensor flow objects with trackable
+    # states that can be saved. below manages and restores checkpoints respectively
     ckpt = tf.train.Checkpoint(
         model=model, optimizer=optimizer, global_step=global_step)
     ckpt_manager = tf.train.CheckpointManager(
         checkpoint=ckpt, directory=model_dir, max_to_keep=5)
+    # restore check pointed values to the model
     ckpt.restore(ckpt_manager.latest_checkpoint)
     if ckpt_manager.latest_checkpoint:
         logging.info('Restored from %s', ckpt_manager.latest_checkpoint)
@@ -239,7 +253,7 @@ def main(_):
         strategy=strategy,
         learning_rate=flags_config.learning_rate,
         model_dir=flags_config.work_unit_dir,
-        use_tf_function=True,
+        use_tf_function=False,  # set false for debug, true for production
         decay_steps=flags_config.decay_steps,
         num_train_steps=flags_config.num_train_steps,
         num_train_run_steps=flags_config.num_train_run_steps,

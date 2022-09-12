@@ -42,7 +42,7 @@ class ResidualDropoutWrapper(snt.Module):
                 axis=-1, create_scale=True, create_offset=True)
 
     def __call__(self, inputs, *args, **kwargs):
-        """Returns the result of the residual dropout computation.
+        """Returns the result of the residual dropout computation and optional layer norm application
 
         Args:
           inputs: inputs to the main module.
@@ -60,7 +60,7 @@ class ResidualDropoutWrapper(snt.Module):
         if 'query_inputs' in kwargs:
             outputs += kwargs['query_inputs']
         else:
-            outputs += inputs
+            outputs += inputs  # Residual (skip) connection. Another way to do improvement 3.3.2 in the paper?
 
         if self._apply_layer_norm:
             outputs = self._layer_norm(outputs)

@@ -55,6 +55,8 @@ class LightGNNLayer(snt.Module):
 
     @snt.once
     def _initialize(self):
+        """ a GCN layer is a single layer MLP (i.e. input and output nodes) with connections matching
+        the adjacency matrix. First layer inputs represent features of each node in a graph"""
         self._mlp = snt.nets.MLP(self._node_model_hidden_sizes,
                                  activate_final=False)
 
@@ -63,7 +65,8 @@ class LightGNNLayer(snt.Module):
                  adj_mat: tf.SparseTensor,
                  is_training: bool) -> tf.Tensor:
         self._initialize()
-        updated_nodes = self._mlp(input_nodes)
+        updated_nodes = self._mlp(input_nodes)  # pass through fully connected MLP layer
+        # keep connections corresponding to adjacency matrix
         combined_nodes = tf.sparse.sparse_dense_matmul(adj_mat, updated_nodes)
         return combined_nodes
 
@@ -87,26 +90,30 @@ class LightGNN(snt.Module):
 
     @snt.once
     def _initialize(self):
+        # builds the single layer graph convolutional network followed by recurrent neural network
         self._layers = []
         for i in range(self._n_layers):
             layer = LightGNNLayer(
                 self._node_model_hidden_sizes,
                 name='layer_%d' % i)
-            # Wrapper to apply layer normalisation and dropout
+            # Wrapper to apply layer normalisation and dropout todo: why?
             layer = layer_norm.ResidualDropoutWrapper(
                 layer, dropout_rate=self._dropout)
             self._layers.append(layer)
 
+        # todo: is this the node embedding model? No its just the input, which feeds GCN
         self._input_embedding_model = snt.Linear(
             self._node_model_hidden_sizes[-1], name='input_embedding')
+        # i think this is the neural network that the GCN then feeds
         self.output_model = snt.nets.MLP(self._output_model_hidden_sizes,
                                          name='output_model')
 
     def encode_graph(self,
                      graph: graphs.GraphsTuple,
                      is_training: bool) -> tf.Tensor:
+        """This converts an input graph to a "node embedding" i.e. pass through GCN"""
         self._initialize()
-        adj = get_adjacency_matrix(graph)
+        adj = get_adjacency_matrix(graph)  # creates adjacency matrix A
         nodes = self._input_embedding_model(graph.nodes)
         for layer in self._layers:
             nodes = layer(nodes, adj, is_training=is_training)
@@ -119,9 +126,12 @@ class LightGNN(snt.Module):
                  node_indices: tf.Tensor,
                  labels: tf.Tensor,
                  **unused_args) -> tf.Tensor:
+        # label data dimensions
         n = tf.shape(labels)[0]
         b = tf.shape(labels)[1]
-        nodes = self.encode_graph(graph, is_training)
+        nodes = self.encode_graph(graph, is_training)  # pass through GCN. is_training applies dropout
+        # not sure what's happening below - how do we go from 64 columns out above to 32 input below
+        # I think this has something to do with the binary output representation for integers but not sure why just one bit
         all_logits = self.output_model(nodes)
         logits = tf.expand_dims(tf.gather(all_logits, node_indices), axis=-1)
         logits = tf.broadcast_to(logits, [n, b, 1])
