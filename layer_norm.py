@@ -60,7 +60,7 @@ class ResidualDropoutWrapper(snt.Module):
         if 'query_inputs' in kwargs:
             outputs += kwargs['query_inputs']
         else:
-            outputs += inputs  # Residual (skip) connection. Another way to do improvement 3.3.2 in the paper?
+            outputs += inputs  # Residual (skip) connection. Another way to do improvement 3.3.2 in the paper
 
         if self._apply_layer_norm:
             outputs = self._layer_norm(outputs)

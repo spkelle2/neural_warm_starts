@@ -91,12 +91,15 @@ def train_and_evaluate(
             logging.info('retracing step_fn')
 
             with tf.GradientTape() as tape:
-                # run the __call__ function of the NeuralLnsLightGNN
+                # run the __call__ function of the NeuralLnsLightGNN - pass through GCN and output MLP
                 logits = model(
                     ds_tuple.graphs_tuple,
                     is_training=True,
                     node_indices=ds_tuple.integer_node_indices,
                     labels=ds_tuple.integer_labels)
+                # label * -log(sigmoid(logit)) + (1 - label) * -log(1 - sigmoid(logit))
+                # this reduces to the negative probability we predicted the binary label correctly
+                # todo: this should be weighted by the quality of the objective value, but don't see that
                 local_loss = tf.nn.sigmoid_cross_entropy_with_logits(
                     labels=tf.cast(ds_tuple.integer_labels, tf.float32),
                     logits=logits)
@@ -113,20 +116,20 @@ def train_and_evaluate(
             _, proba = model.greedy_sample(ds_tuple.graphs_tuple,
                                            ds_tuple.integer_node_indices)
             proba = tf.reshape(proba, [-1])
-
+            # updates loss metrics
             best_label = tf.reshape(ds_tuple.integer_labels[:, 0, :], [-1])
             train_acc_metric.update_state(best_label, proba)
             train_auc_metric.update_state(best_label, proba)
 
             replica_ctx = tf.distribute.get_replica_context()
-            grads = tape.gradient(local_loss, model.trainable_variables)
+            grads = tape.gradient(local_loss, model.trainable_variables)  # gradients
             grads = replica_ctx.all_reduce('sum', grads)
             if grad_clip_norm > 0:
-                grads, _ = tf.clip_by_global_norm(grads, grad_clip_norm)
-            lr = tf.maximum(lr_schedule(optimizer.step), MIN_LEARNING_RATE)
+                grads, _ = tf.clip_by_global_norm(grads, grad_clip_norm)  # shrinks the gradients if really large
+            lr = tf.maximum(lr_schedule(optimizer.step), MIN_LEARNING_RATE)  # step size
             optimizer.learning_rate = lr
-            optimizer.apply(grads, model.trainable_variables)
-            global_step.assign_add(1)
+            optimizer.apply(grads, model.trainable_variables)  # take a step
+            global_step.assign_add(1)  # increment step count
             return local_loss
 
         losses = []
@@ -139,7 +142,7 @@ def train_and_evaluate(
                 per_replica_losses,
                 axis=None)
             losses.append(loss)
-        return tf.reduce_mean(losses)
+        return tf.reduce_mean(losses)  # average loss from <num_train_run_steps> steps
 
     def eval_step(eval_inputs):
 
@@ -193,7 +196,7 @@ def train_and_evaluate(
         model=model, optimizer=optimizer, global_step=global_step)
     ckpt_manager = tf.train.CheckpointManager(
         checkpoint=ckpt, directory=model_dir, max_to_keep=5)
-    # restore check pointed values to the model
+    # restore check pointed values to the model (todo: should be able to pull trained model from here to make predictions)
     ckpt.restore(ckpt_manager.latest_checkpoint)
     if ckpt_manager.latest_checkpoint:
         logging.info('Restored from %s', ckpt_manager.latest_checkpoint)
@@ -217,7 +220,7 @@ def train_and_evaluate(
                      f'acc = {train_acc:.4f} auc = {train_auc:.4f} ' +
                      f'steps_per_second = {num_train_run_steps / (end - start)}')
 
-        if step % eval_every_steps == 0:
+        if step % eval_every_steps == 0:  # evaluate the current model against the validation data
             model.save_model(model_dir)
             eval_inputs = iter(valid_data)
             valid_loss = eval_step(eval_inputs)

@@ -23,9 +23,9 @@ def get_light_gnn_model_config():
 
     # Tunable parameters
     config.params = ml_collections.ConfigDict()
-    config.params.n_layers = 2  # GCN layers
-    config.params.node_model_hidden_sizes = [64, 64]  # input and output width of each layer in GCN
-    config.params.output_model_hidden_sizes = [32, 1]  # input and output width for single layer MLP (output model)
+    config.params.n_layers = 2  # GCN and output MLP layers
+    config.params.node_model_hidden_sizes = [64, 64]  # output width of each layer in GCN
+    config.params.output_model_hidden_sizes = [32, 1]  # output width of each MLP layer (output model)
     config.params.dropout = 0.1
 
     return config

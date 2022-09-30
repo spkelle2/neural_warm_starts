@@ -90,35 +90,35 @@ class LightGNN(snt.Module):
 
     @snt.once
     def _initialize(self):
-        # builds the single layer graph convolutional network followed by recurrent neural network
+        # builds the graph convolutional network (eqns 2-4 in paper) to compute H dim vector for each node in milp graph
         self._layers = []
         for i in range(self._n_layers):
             layer = LightGNNLayer(
                 self._node_model_hidden_sizes,
                 name='layer_%d' % i)
-            # Wrapper to apply layer normalisation and dropout todo: why?
+            # Wrapper to apply layer normalisation, residual (skip) connection, and dropout
             layer = layer_norm.ResidualDropoutWrapper(
                 layer, dropout_rate=self._dropout)
             self._layers.append(layer)
 
-        # todo: is this the node embedding model? No its just the input, which feeds GCN
+        # linear model before GCN (todo: why?)
         self._input_embedding_model = snt.Linear(
             self._node_model_hidden_sizes[-1], name='input_embedding')
-        # i think this is the neural network that the GCN then feeds
+        # the mlp that the GCN then feeds
         self.output_model = snt.nets.MLP(self._output_model_hidden_sizes,
                                          name='output_model')
 
     def encode_graph(self,
                      graph: graphs.GraphsTuple,
                      is_training: bool) -> tf.Tensor:
-        """This converts an input graph to a "node embedding" i.e. pass through GCN"""
+        """This converts an input graph to "node embeddings" i.e. pass through GCN but not output MLP"""
         self._initialize()
         adj = get_adjacency_matrix(graph)  # creates adjacency matrix A
         nodes = self._input_embedding_model(graph.nodes)
         for layer in self._layers:
             nodes = layer(nodes, adj, is_training=is_training)
 
-        return nodes
+        return nodes  # this is the "node embedding", the output of the GCN
 
     def __call__(self,
                  graph: graphs.GraphsTuple,
@@ -126,17 +126,20 @@ class LightGNN(snt.Module):
                  node_indices: tf.Tensor,
                  labels: tf.Tensor,
                  **unused_args) -> tf.Tensor:
-        # label data dimensions
+        # label data dimensions (todo: number of variables and bits per variable?)
         n = tf.shape(labels)[0]
         b = tf.shape(labels)[1]
+        # take MILP graph and create an H dimensional vector for each node
+        # each vector is a node embedding and is the result of passing through a GCN
+        # is_training option applies drop out
         nodes = self.encode_graph(graph, is_training)  # pass through GCN. is_training applies dropout
-        # not sure what's happening below - how do we go from 64 columns out above to 32 input below
-        # I think this has something to do with the binary output representation for integers but not sure why just one bit
+        # sonnet infers input sizes which is how we go from 64 to 32 to 1 length vectors for each node via mlp below
         all_logits = self.output_model(nodes)
+        # subselect bit predictions for nodes corresponding to variables (todo: how do we make sure to get all predictions when multiple bits/variable?)
         logits = tf.expand_dims(tf.gather(all_logits, node_indices), axis=-1)
         logits = tf.broadcast_to(logits, [n, b, 1])
 
-        return logits
+        return logits  # \mu_d is the sigmoid of logit[d], i.e. p(x_d=1 | MILP)
 
     @tf.function(input_signature=[
         GT_SPEC,
@@ -187,9 +190,9 @@ class NeuralLnsLightGNN(LightGNN):
     def greedy_sample(self, graph, node_indices):
         nodes = self.encode_graph(graph, False)
         logits = self.output_model(nodes)
-        probas = tf.math.sigmoid(tf.gather(logits, node_indices))
+        probas = tf.math.sigmoid(tf.gather(logits, node_indices))  # probability each bit is one
         sample = tf.round(probas)
-        return sample, probas
+        return sample, probas  # sample is boolean value with higher probability
 
     @tf.function(input_signature=[
         GT_SPEC,
