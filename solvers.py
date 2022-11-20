@@ -52,7 +52,7 @@ class BaseSolver(abc.ABC):
 
     @abc.abstractmethod
     def solve(
-            self, mip: Any, sol_data: solution_data.BaseSolutionData,
+            self, mip_pth: Any, sol_data: solution_data.BaseSolutionData,
             timer: calibration.Timer
     ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
         raise NotImplementedError('solve method should be implemented')
@@ -62,11 +62,11 @@ class SCIPSolver(BaseSolver):
     """Agent that solves MIP with SCIP."""
 
     def solve(
-            self, mip: Any, sol_data: solution_data.BaseSolutionData,
+            self, mip_pth: Any, sol_data: solution_data.BaseSolutionData,
             timer: calibration.Timer
     ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
         status, sol_data, _ = scip_solve(
-            mip=mip,
+            mip_pth=mip_pth,
             scip_solve_config=self._solver_config,
             sol_data=sol_data,
             timer=timer)
@@ -79,16 +79,16 @@ class NeuralDivingSolver(BaseSolver):
     """Solver that implements Neural Diving."""
 
     def solve(
-            self, mip: Any, sol_data: solution_data.BaseSolutionData,
+            self, mip_pth: Any, sol_data: solution_data.BaseSolutionData,
             timer: calibration.Timer
     ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
         sub_mip, stats = predict_and_create_sub_mip(
-            mip, self._sampler, self._solver_config.predict_config)
+            mip_pth, self._sampler, self._solver_config.predict_config)
         status, sol_data, sub_mip_sol = scip_solve(
             sub_mip, self._solver_config.scip_solver_config, sol_data, timer)
         if self._solver_config.enable_restart:
             status, sol_data, _ = scip_solve(
-                mip, self._solver_config.restart_scip_solver_config, sol_data, timer,
+                mip_pth, self._solver_config.restart_scip_solver_config, sol_data, timer,
                 sub_mip_sol)
 
         stats['solution_status'] = str(status)
@@ -204,7 +204,7 @@ class NeuralNSSolver(BaseSolver):
 
 
 def scip_solve(
-        mip: Any,
+        mip_pth: Any,
         scip_solve_config: ml_collections.ConfigDict,
         sol_data: solution_data.BaseSolutionData,
         timer: calibration.Timer,
@@ -214,7 +214,7 @@ def scip_solve(
     """Uses SCIP to solve the MIP and writes solutions to SolutionData.
 
     Args:
-      mip: MIP to be solved
+      mip_pth: MIP to be solved
       scip_solve_config: config for SCIPWrapper
       sol_data: SolutionData to write solving data to
       timer: timer to use to record real elapsed time and (possibly) calibrated
@@ -230,8 +230,9 @@ def scip_solve(
          to the original space (this is convenient for restarts)
     """
     # Initialize SCIP solver and load the MIP
+    # todo: make this just read an LP file
     mip_solver = solving_utils.Solver()
-    mip_solver.load_model(mip)
+    mip_solver.load_model(mip_pth)
 
     # Try to load the best known solution to SCIP
     if best_known_sol is not None:
@@ -293,9 +294,9 @@ def predict_and_create_sub_mip(
     variable_ubs = features['variable_ubs']
     graphs_tuple = data_utils.get_graphs_tuple(features)
 
+    # removed var_ubs since we fix to lower bounds
     assignment = sampler.sample(graphs_tuple, var_names, variable_lbs,
-                                variable_ubs, node_indices,
-                                **config.sampler_config.params)
+                                node_indices, **config.sampler_config.params)
     sub_mip = mip_utils.make_sub_mip(mip, assignment)
 
     return sub_mip

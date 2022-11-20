@@ -25,6 +25,8 @@ from ml_collections.config_flags import config_flags
 import sonnet as snt
 import tensorflow.compat.v2 as tf
 
+tf.config.run_functions_eagerly(True)  # set True for debugging data_utils.py
+
 import data_utils
 import light_gnn
 
@@ -100,6 +102,7 @@ def train_and_evaluate(
                 # label * -log(sigmoid(logit)) + (1 - label) * -log(1 - sigmoid(logit))
                 # this reduces to the negative probability we predicted the binary label correctly
                 # todo: this should be weighted by the quality of the objective value, but don't see that
+                # well actually we just use optimal solutions so no need to weight quality
                 local_loss = tf.nn.sigmoid_cross_entropy_with_logits(
                     labels=tf.cast(ds_tuple.integer_labels, tf.float32),
                     logits=logits)

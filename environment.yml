@@ -1,0 +1,19 @@
+name: neural_lns
+channels:
+  - apple
+  - conda-forge
+dependencies:
+  - python
+  - pip
+  - tensorflow-deps
+  - absl-py
+  - scipy
+  - wheel
+  - pyscipopt
+  - pip:
+    - tensorflow-macos
+    # - tensorflow-metal
+    - tensorflow_probability
+    - dm-sonnet
+    - ml_collections
+    - graph_nets

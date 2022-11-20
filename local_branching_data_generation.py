@@ -192,7 +192,7 @@ def generate_data_for_instance(
         logging.warning('No solution found for %s', instance_name)
         return 0
 
-    root_features = data_utils.get_features(mip, scip_params)
+    root_features = data_utils.get_features(mip_pth, scip_params)
     if root_features is None or root_features['variable_features'] is None:
         logging.warning('No root features found for %s', instance_name)
         return 0

@@ -16,9 +16,12 @@
 
 import abc
 import enum
+import gurobipy as gu
+from math import isclose
+import numpy as np
+import scipy.sparse as sp
+import tensorflow as tf
 from typing import Any, Dict, Optional
-
-import ml_collections
 
 import mip_utils
 
@@ -29,6 +32,45 @@ class SolverState(enum.Enum):
     FINISHED = 2
 
 
+type_map = {gu.GRB.BINARY: 0, gu.GRB.INTEGER: 1, gu.GRB.CONTINUOUS: 3}
+status_map = {gu.GRB.NONBASIC_LOWER: 0, gu.GRB.BASIC: 1, gu.GRB.NONBASIC_UPPER: 2, gu.GRB.SUPERBASIC: 3}
+
+
+def _bytes_feature(value):
+    """Returns a bytes_list from a string / byte."""
+    if isinstance(value, type(tf.constant(0))):
+        value = value.numpy() # BytesList won't unpack a string from an EagerTensor.
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
+
+
+def _float_feature(value):
+    """Returns a float_list from a float / double."""
+    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
+
+def _int64_feature(value):
+    """Returns an int64_list from a bool / enum / int / uint."""
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
+
+
+feature_type = {
+    'constraint_features': _bytes_feature,
+    'edge_features': _bytes_feature,
+    'edge_indices': _bytes_feature,
+    'variable_features': _bytes_feature,
+    'variable_lbs': _float_feature,
+    'variable_ubs': _float_feature,
+    'constraint_feature_names': _bytes_feature,
+    'variable_feature_names': _bytes_feature,
+    'edge_features_names': _bytes_feature,
+    'variable_names': _bytes_feature,
+    'binary_variable_indices': _int64_feature,
+    'all_integer_variable_indices': _int64_feature,
+    'model_maximize': _int64_feature,
+    'best_solution_labels': _float_feature,
+}
+
+
 class Solver(abc.ABC):
     """Wrapper around a given classical MIP solver.
 
@@ -36,26 +78,169 @@ class Solver(abc.ABC):
     SCIP.
     """
 
-    def load_model(self, mip: Any) -> SolverState:
-        """Loads a MIP model into the solver."""
-        raise NotImplementedError('load_model method should be implemented')
+    def __init__(self):
+        super().__init__()
+        self.m = None
 
-    def solve(
-            self, solving_params: ml_collections.ConfigDict
-    ) -> mip_utils.MPSolverResponseStatus:
+    def load_model(self, mip_pth: str) -> SolverState:
+        """Loads a MIP model into the solver."""
+        self.m = gu.read(mip_pth)
+        return SolverState.MODEL_LOADED
+
+    def solve(self, relaxation: bool = False) -> mip_utils.MPSolverResponseStatus:
         """Solves the loaded MIP model."""
-        raise NotImplementedError('solve method should be implemented')
+        self.m.optimize()
+        assert self.m.status == gu.GRB.OPTIMAL
+        return mip_utils.MPSolverResponseStatus.OPTIMAL
 
     def get_best_solution(self) -> Optional[Any]:
         """Returns the best solution found from the last solve call."""
-        raise NotImplementedError('get_best_solution method should be implemented')
+        assert self.m.status == gu.GRB.OPTIMAL
+        assert [v.index for v in self.m.getVars()] == list(range(self.m.NumVars)), \
+            "we need to assume that variables are in the same order as columns"
 
-    def add_solution(self, solution: Any) -> bool:
+        return np.array([v.x for v in self.m.getVars()]).reshape(-1, 1)
+
+    def add_solution(self, solution: list[float]) -> bool:
         """Adds a known solution to the solver."""
-        raise NotImplementedError('add_solution method should be implemented')
+        assert len(solution) == self.m.NumVars
+        assert [v.index for v in self.m.getVars()] == list(range(self.m.NumVars)), \
+            "we need to assume that variables are in the same order as columns"
 
-    def extract_lp_features_at_root(
-            self, solving_params: ml_collections.ConfigDict) -> Dict[str, Any]:
+        scip_solution = self.m.createSol(self)
+        for i, val in enumerate(solution):
+            scip_solution[i] = val
+        self.m.trySol(scip_solution)
+        assert False, "check what the output is above"
+        return True
+
+    def extract_lp_features_at_root(self) -> Dict[str, Any]:
         """Returns a dictionary of root node features."""
-        raise NotImplementedError(
-            'extract_lp_features_at_root method should be implemented')
+
+        assert [v.index for v in self.m.getVars()] == list(range(self.m.NumVars)), \
+            "we need to assume that variables are in the same order as columns"
+
+        assert [c.index for c in self.m.getConstrs()] == list(range(len(self.m.getConstrs()))), \
+            "we need to assume that constraints are in the same order as rows"
+
+        # some values we'll reuse
+        objective = np.array([v.Obj for v in self.m.getVars()])
+        obj_norm = np.linalg.norm(objective)
+        obj_norm = 1 if obj_norm <= 0 else obj_norm
+        A = self.m.getA().toarray()
+        row_norms = np.linalg.norm(A, axis=1)
+        row_norms[row_norms == 0] = 1
+
+        # features already available
+        lbs = np.array([max(v.LB, -1e10) for v in self.m.getVars()])
+        ubs = np.array([min(v.UB, 1e10) for v in self.m.getVars()])
+        binary_idxs = np.array([v.index for v in self.m.getVars() if v.VType == gu.GRB.BINARY],
+                               dtype=np.int64)
+        integer_idxs = np.array([v.index for v in self.m.getVars() if v.VType == gu.GRB.INTEGER],
+                                dtype=np.int64)
+        variable_names = [v.VarName for v in self.m.getVars()]
+        model_maximize = np.array([int(self.m.ModelSense == gu.GRB.MAXIMIZE)], dtype=np.int64)
+
+        # solve the root relaxation
+        relax = self.m.relax()
+        relax.optimize()
+
+        # Column features - for unsures I think 0 is reasonable since this is the first LP solved
+        col_feats = {}
+        col_feats['age'] = np.zeros((self.m.NumVars, 1))  # unsure how this is calculated
+        col_feats['avg_inc_val'] = np.zeros((self.m.NumVars, 1))  # unsure how this is calculated
+        col_feats['basis_status'] = np.zeros((self.m.NumVars, 4))  # LOWER BASIC UPPER ZERO
+        status_codes = [status_map[v.VBasis] for v in relax.getVars()]
+        col_feats['basis_status'][np.arange(self.m.NumVars), status_codes] = 1
+        col_feats['coef_normalized'] = objective.reshape(-1, 1) / obj_norm
+        col_feats['has_lb'] = (lbs > -float('inf')).astype(np.int64).reshape(-1, 1)
+        col_feats['has_ub'] = (ubs < float('inf')).astype(np.int64).reshape(-1, 1)
+        col_feats['inc_val'] = np.zeros((self.m.NumVars, 1))  # unsure how this is calculated
+        reduced_costs = [v.RC for v in relax.getVars()]
+        col_feats['reduced_cost'] = np.array(reduced_costs).reshape(-1, 1) / obj_norm
+        col_feats['sol_frac'] = np.array([v.x % 1 for v in relax.getVars()]).reshape(-1, 1)
+        # continuous have no fractionality
+        col_feats['sol_frac'][[v.VType == gu.GRB.CONTINUOUS for v in self.m.getVars()]] = 0
+        at_lb = [int(isclose(v.LB, v.x, abs_tol=1e-4)) for v in relax.getVars()]
+        col_feats['sol_is_at_lb'] = np.array(at_lb).reshape(-1, 1)
+        at_ub = [int(isclose(v.UB, v.x, abs_tol=1e-4)) for v in relax.getVars()]
+        col_feats['sol_is_at_ub'] = np.array(at_ub).reshape(-1, 1)
+        col_feats['sol_val'] = np.array([v.x for v in relax.getVars()]).reshape(-1, 1)
+        col_feats['type'] = np.zeros((self.m.NumVars, 4))  # BINARY INTEGER IMPLINT CONTINUOUS
+        type_codes = [type_map[v.VType] for v in self.m.getVars()]
+        col_feats['type'][np.arange(self.m.NumVars), type_codes] = 1
+
+        col_feat_names = [
+            [k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])]
+            for k, v in col_feats.items()
+        ]
+        col_feat_names = [n for names in col_feat_names for n in names]
+        col_feat_vals = np.concatenate(list(col_feats.values()), axis=-1)
+
+        # Row features
+        row_feats = {}
+        # all have same age, which is 0th LP relaxation
+        row_feats['age'] = np.zeros(self.m.NumConstrs).reshape(-1, 1)
+        rhs = np.array([c.RHS for c in self.m.getConstrs()])
+        row_feats['bias'] = np.array(rhs / row_norms).reshape(-1, 1)
+        duals = np.array([c.Pi for c in relax.getConstrs()])
+        row_feats['dualsol_val_normalized'] = (duals / (row_norms * obj_norm)).reshape(-1, 1)
+        row_feats['is_tight'] = np.array([int(isclose(c.Slack, 0, abs_tol=1e-4))
+                                          for c in relax.getConstrs()], dtype=np.int64).reshape(-1, 1)
+        row_feats['obj_cosine_similarity'] = (np.dot(A, objective) / (row_norms * obj_norm)).reshape(-1, 1)
+
+        row_feat_names = [[k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])] for k, v in
+                          row_feats.items()]
+        row_feat_names = [n for names in row_feat_names for n in names]
+        row_feat_vals = np.concatenate(list(row_feats.values()), axis=-1)
+
+        # Edge features - normalize the coef matrix
+        coef_matrix = sp.coo_matrix(self.m.getA() / row_norms.reshape(-1, 1))
+        edge_row_idxs, edge_col_idxs = coef_matrix.row, coef_matrix.col
+        edge_feats = {'coef_normalized': coef_matrix.data.reshape(-1, 1)}
+
+        edge_feat_names = [[k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])] for k, v in
+                           edge_feats.items()]
+        edge_feat_names = [n for names in edge_feat_names for n in names]
+        edge_feat_indices = np.vstack([edge_row_idxs, edge_col_idxs])
+        edge_feat_vals = np.concatenate(list(edge_feats.values()), axis=-1)
+
+        features = {
+            'edge_features_names': edge_feat_names,
+            'best_solution_labels': np.array([]),
+            'edge_features': edge_feat_vals,
+            'binary_variable_indices': binary_idxs,
+            'variable_ubs': ubs,
+            'edge_indices': edge_feat_indices,
+            'variable_feature_names': col_feat_names,
+            'model_maximize': model_maximize,
+            'constraint_features': row_feat_vals,
+            'variable_lbs': lbs,
+            'all_integer_variable_indices': integer_idxs,
+            'variable_names': variable_names,
+            'variable_features': col_feat_vals,
+            'constraint_feature_names': row_feat_names
+        }
+
+        return features
+
+    def encode_features(self, features):
+
+        # encode string and 2-D arrays to bytes
+        features['variable_names'] = [n.encode('utf-8') for n in features['variable_names']]
+        for name in ['edge_features_names', 'variable_feature_names', 'constraint_feature_names']:
+            features[name] = [','.join([n for n in features[name]]).encode('utf-8')]
+        for name in ['edge_features', 'variable_features', 'constraint_features', 'edge_indices']:
+            features[name] = [features[name].tobytes()]
+
+        # convert all values to tf.train.Feature
+        features = {k: feature_type[k](v) for k, v in features.items()}
+        example = tf.train.Example(features=tf.train.Features(feature=features))
+        return example
+
+    def extract_labeled_features(self):
+        features = self.extract_lp_features_at_root()
+        self.solve()
+        features['best_solution_labels'] = self.get_best_solution()
+        example = self.encode_features(features)
+        return example

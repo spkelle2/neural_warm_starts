@@ -188,20 +188,13 @@ def get_graphs_tuple(state: Dict[str, Any]) -> graphs.GraphsTuple:
 
 
 def get_features(
-        mip: mip_utils.MPModel,
+        mip: str,
         solver_params: ml_collections.ConfigDict = SCIP_FEATURE_EXTRACTION_PARAMS
 ) -> Optional[Dict[str, Any]]:
     """Extracts and preprocesses the features from the root of B&B tree."""
     mip_solver = solving_utils.Solver()
-    presolver = preprocessor.Preprocessor()
-    _, mip = presolver.presolve(mip)
     status = mip_solver.load_model(mip)
-    features = None
-    if status == mip_utils.MPSolverResponseStatus.NOT_SOLVED:
-        features = mip_solver.extract_lp_features_at_root(solver_params)
-
-    if features is not None and mip is not None:
-        features['model_maximize'] = mip.maximize
+    features = mip_solver.extract_lp_features_at_root(solver_params)
 
     return features
 

@@ -23,7 +23,7 @@ def get_light_gnn_model_config():
 
     # Tunable parameters
     config.params = ml_collections.ConfigDict()
-    config.params.n_layers = 2  # GCN and output MLP layers
+    config.params.n_layers = 2  # GCN and output MLP layers (layer <=> set of weights)
     config.params.node_model_hidden_sizes = [64, 64]  # output width of each layer in GCN
     config.params.output_model_hidden_sizes = [32, 1]  # output width of each MLP layer (output model)
     config.params.dropout = 0.1
@@ -47,11 +47,11 @@ def get_config():
 
     # Each entry is a pair of (<dataset_path>, <prefix>).
     config.train_datasets = [
-        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/example.tfrecord', 'train'),
+        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/samples/facilities/test_100_100_5/instance_1.tfrecord', 'train'),
     ]
 
     config.valid_datasets = [
-        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/example.tfrecord', 'valid'),
+        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/samples/facilities/test_100_100_5/instance_1.tfrecord', 'valid'),
     ]
     config.model_config = get_light_gnn_model_config()
     return config
