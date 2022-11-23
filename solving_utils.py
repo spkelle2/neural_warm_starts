@@ -36,10 +36,17 @@ type_map = {gu.GRB.BINARY: 0, gu.GRB.INTEGER: 1, gu.GRB.CONTINUOUS: 3}
 status_map = {gu.GRB.NONBASIC_LOWER: 0, gu.GRB.BASIC: 1, gu.GRB.NONBASIC_UPPER: 2, gu.GRB.SUPERBASIC: 3}
 
 
+def _bytes_single_value_feature(value):
+    """Returns a bytes_list from a string / byte."""
+    if isinstance(value, type(tf.constant(0))):
+        value = value.numpy()  # BytesList won't unpack a string from an EagerTensor.
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+
 def _bytes_feature(value):
     """Returns a bytes_list from a string / byte."""
     if isinstance(value, type(tf.constant(0))):
-        value = value.numpy() # BytesList won't unpack a string from an EagerTensor.
+        value = value.numpy()  # BytesList won't unpack a string from an EagerTensor.
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
 
 
@@ -54,15 +61,15 @@ def _int64_feature(value):
 
 
 feature_type = {
-    'constraint_features': _bytes_feature,
-    'edge_features': _bytes_feature,
-    'edge_indices': _bytes_feature,
-    'variable_features': _bytes_feature,
+    'constraint_features': _bytes_single_value_feature,
+    'edge_features': _bytes_single_value_feature,
+    'edge_indices': _bytes_single_value_feature,
+    'variable_features': _bytes_single_value_feature,
     'variable_lbs': _float_feature,
     'variable_ubs': _float_feature,
-    'constraint_feature_names': _bytes_feature,
-    'variable_feature_names': _bytes_feature,
-    'edge_features_names': _bytes_feature,
+    'constraint_feature_names': _bytes_single_value_feature,
+    'variable_feature_names': _bytes_single_value_feature,
+    'edge_features_names': _bytes_single_value_feature,
     'variable_names': _bytes_feature,
     'binary_variable_indices': _int64_feature,
     'all_integer_variable_indices': _int64_feature,
@@ -166,7 +173,9 @@ class Solver(abc.ABC):
         at_ub = [int(isclose(v.UB, v.x, abs_tol=1e-4)) for v in relax.getVars()]
         col_feats['sol_is_at_ub'] = np.array(at_ub).reshape(-1, 1)
         col_feats['sol_val'] = np.array([v.x for v in relax.getVars()]).reshape(-1, 1)
-        col_feats['type'] = np.zeros((self.m.NumVars, 4))  # BINARY INTEGER IMPLINT CONTINUOUS
+        # changed columns from 4 to 11 to account for 7 extra columns needed for LNS incumbents
+        # leave the 7 extra columns as zero since we don't use LNS
+        col_feats['type'] = np.zeros((self.m.NumVars, 11))  # BINARY INTEGER IMPLINT CONTINUOUS
         type_codes = [type_map[v.VType] for v in self.m.getVars()]
         col_feats['type'][np.arange(self.m.NumVars), type_codes] = 1
 
@@ -175,7 +184,7 @@ class Solver(abc.ABC):
             for k, v in col_feats.items()
         ]
         col_feat_names = [n for names in col_feat_names for n in names]
-        col_feat_vals = np.concatenate(list(col_feats.values()), axis=-1)
+        col_feat_vals = np.concatenate(list(col_feats.values()), axis=-1).astype(np.float32)
 
         # Row features
         row_feats = {}
@@ -192,7 +201,7 @@ class Solver(abc.ABC):
         row_feat_names = [[k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])] for k, v in
                           row_feats.items()]
         row_feat_names = [n for names in row_feat_names for n in names]
-        row_feat_vals = np.concatenate(list(row_feats.values()), axis=-1)
+        row_feat_vals = np.concatenate(list(row_feats.values()), axis=-1).astype(np.float32)
 
         # Edge features - normalize the coef matrix
         coef_matrix = sp.coo_matrix(self.m.getA() / row_norms.reshape(-1, 1))
@@ -202,8 +211,8 @@ class Solver(abc.ABC):
         edge_feat_names = [[k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])] for k, v in
                            edge_feats.items()]
         edge_feat_names = [n for names in edge_feat_names for n in names]
-        edge_feat_indices = np.vstack([edge_row_idxs, edge_col_idxs])
-        edge_feat_vals = np.concatenate(list(edge_feats.values()), axis=-1)
+        edge_feat_indices = np.vstack([edge_row_idxs, edge_col_idxs]).T.astype(np.int64)
+        edge_feat_vals = np.concatenate(list(edge_feats.values()), axis=-1).astype(np.float32)
 
         features = {
             'edge_features_names': edge_feat_names,
@@ -229,9 +238,9 @@ class Solver(abc.ABC):
         # encode string and 2-D arrays to bytes
         features['variable_names'] = [n.encode('utf-8') for n in features['variable_names']]
         for name in ['edge_features_names', 'variable_feature_names', 'constraint_feature_names']:
-            features[name] = [','.join([n for n in features[name]]).encode('utf-8')]
+            features[name] = ','.join([n for n in features[name]]).encode('utf-8')
         for name in ['edge_features', 'variable_features', 'constraint_features', 'edge_indices']:
-            features[name] = [features[name].tobytes()]
+            features[name] = tf.io.serialize_tensor(features[name])
 
         # convert all values to tf.train.Feature
         features = {k: feature_type[k](v) for k, v in features.items()}
@@ -242,5 +251,4 @@ class Solver(abc.ABC):
         features = self.extract_lp_features_at_root()
         self.solve()
         features['best_solution_labels'] = self.get_best_solution()
-        example = self.encode_features(features)
-        return example
+        return features
