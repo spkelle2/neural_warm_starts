@@ -243,6 +243,8 @@ def train_and_evaluate(
 
 def main(_):
     flags_config = FLAGS.config
+    tf.config.threading.set_intra_op_parallelism_threads(4)
+    tf.config.threading.set_inter_op_parallelism_threads(4)
     gpus = tf.config.experimental.list_logical_devices(device_type='GPU')
     if gpus:
         logging.info('Found GPUs: %s', gpus)

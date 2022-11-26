@@ -14,6 +14,7 @@
 # ============================================================================
 """Configuration parameters for Neural LNS training."""
 
+import os
 import ml_collections
 
 
@@ -34,7 +35,7 @@ def get_light_gnn_model_config():
 def get_config():
     """Training configuration."""
     config = ml_collections.ConfigDict()
-    config.work_unit_dir = '/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/models'
+    config.work_unit_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models')
 
     # Training config
     config.learning_rate = 1e-2
@@ -46,12 +47,15 @@ def get_config():
     config.grad_clip_norm = 1.0
 
     # Each entry is a pair of (<dataset_path>, <prefix>).
+    sample_train = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                'data/samples/facilities/train_100_100_5')
+    sample_valid = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                'data/samples/facilities/valid_100_100_5')
     config.train_datasets = [
-        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/samples/facilities/test_100_100_5/instance_1.tfrecord', 'train'),
+        (os.path.join(sample_train, instance), 'train') for instance in os.listdir(sample_train)
     ]
-
     config.valid_datasets = [
-        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/samples/facilities/test_100_100_5/instance_1.tfrecord', 'valid'),
+        (os.path.join(sample_train, instance), 'valid') for instance in os.listdir(sample_valid)
     ]
     config.model_config = get_light_gnn_model_config()
     return config

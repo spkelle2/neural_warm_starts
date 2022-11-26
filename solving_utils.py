@@ -91,7 +91,10 @@ class Solver(abc.ABC):
 
     def load_model(self, mip_pth: str) -> SolverState:
         """Loads a MIP model into the solver."""
-        self.m = gu.read(mip_pth)
+        env = gu.Env(empty=True)
+        env.setParam('OutputFlag', 0)
+        env.start()
+        self.m = gu.read(mip_pth, env=env)
         return SolverState.MODEL_LOADED
 
     def solve(self, relaxation: bool = False) -> mip_utils.MPSolverResponseStatus:
