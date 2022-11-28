@@ -297,6 +297,7 @@ class NeuralDivingSolver(Solver):
             'neural diving optimal': self.m.status == gu.GRB.OPTIMAL,
             'neural diving time': self.m.runtime + sub_m.runtime,
             'neural diving objective': self.m.objVal,
+            'submip optimal': self.m.status == gu.GRB.OPTIMAL,
             'submip time': sub_m.runtime,
             'submip objective': sub_m.objVal,
         }
