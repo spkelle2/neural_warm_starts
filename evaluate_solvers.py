@@ -20,15 +20,27 @@ def main(instance_type: str, unassigned_factor: int):
                                  'data/evaluations', f'{instance_type}.csv')
     sampler = RepeatedCompetitionSampler(model_dir)
     data = {}
+    num_unassigned_vars = None
 
     for subdir_name in os.listdir(instance_root):
-        if 'transfer' not in subdir_name:
+        if 'transfer' not in subdir_name or 'train':
             continue
         if instance_type == 'facilities':
             n_cust, n_facilities, ratio = [int(n) for n in re.match(r'^\w+_(\d+)_(\d+)_(\d+)$', subdir_name).groups()]
-            num_unassigned_vars = int(2 * ratio * n_cust / n_facilities)
+            # give ourselves <unassigned_factor> as many warehouses as cover capacity (2 is good)
+            num_unassigned_vars = int(unassigned_factor * ratio * n_cust / n_facilities)
+        if instance_type == 'schedule':
+            n_weeks, n_teams, ratio = [int(n) for n in re.match(r'^\w+_(\d+)_(\d+)_(\d+)$', subdir_name).groups()]
+            # each week we have n_teams/2 games, so give ourselves <unassigned_factor>x as many options (2 is good)
+            num_unassigned_vars = int(unassigned_factor * n_weeks * n_teams)
+        if instance_type == 'cauctions':
+            n_items, n_bids = [int(n) for n in re.match(r'^\w+_(\d+)_(\d+)$', subdir_name).groups()]
+            # for each item we accept 1 bid, so select <unassigned_factor>x as many options (2 is good)
+            num_unassigned_vars = int(unassigned_factor * n_items)
 
         for i, file_name in enumerate(os.listdir(os.path.join(instance_root, subdir_name))):
+            if i >= 10:
+                continue
             print(f'evaluating directory {subdir_name} instance {i + 1}')
             file_root = file_name.split('.')[0]
             instance_pth = os.path.join(instance_root, subdir_name, file_name)
