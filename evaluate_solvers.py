@@ -23,7 +23,7 @@ def main(instance_type: str, unassigned_factor: int):
     num_unassigned_vars = None
 
     for subdir_name in os.listdir(instance_root):
-        if 'transfer' not in subdir_name or 'train':
+        if ('transfer' not in subdir_name) and ('train' not in subdir_name):
             continue
         if instance_type == 'facilities':
             n_cust, n_facilities, ratio = [int(n) for n in re.match(r'^\w+_(\d+)_(\d+)_(\d+)$', subdir_name).groups()]

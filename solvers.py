@@ -291,14 +291,16 @@ class NeuralDivingSolver(Solver):
             self.m.params.StartNumber = 0
             for v in self.m.getVars():
                 v.start = sub_m.getVarByName(v.varName).X
+        else:
+            print('prediction failed to find feasible solution')
 
         self.m.optimize()
         stats = {
             'neural diving optimal': self.m.status == gu.GRB.OPTIMAL,
             'neural diving time': self.m.runtime + sub_m.runtime,
             'neural diving objective': self.m.objVal,
-            'submip optimal': self.m.status == gu.GRB.OPTIMAL,
+            'submip optimal': sub_m.status == gu.GRB.OPTIMAL,
             'submip time': sub_m.runtime,
-            'submip objective': sub_m.objVal,
+            'submip objective': sub_m.objVal if sub_m.status == gu.GRB.OPTIMAL else None,
         }
         return stats
