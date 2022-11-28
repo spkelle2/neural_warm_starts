@@ -23,7 +23,7 @@ class Timer(abc.ABC):
     """Class describing the API that need to be implemented for the Timer.
 
     This Timer class is used to time the duration of the MIP solving process, and
-    is used in solvers.py. The methods that need to be provided are:
+    is used in solvers_old.py. The methods that need to be provided are:
 
     - start_and_wait: This should start the timer, and waits for further calls.
     - terminate_and_wait: This should terminate the timer, and waits for further

@@ -41,7 +41,7 @@ def get_config():
     config.learning_rate = 1e-2
     config.decay_steps = 300
     config.num_train_run_steps = 10
-    config.num_train_steps = 1000
+    config.num_train_steps = 30  # was 1000
     config.eval_every_steps = 500
     config.eval_steps = 128
     config.grad_clip_norm = 1.0

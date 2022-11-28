@@ -12,386 +12,289 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Solvers used to solve MIPs."""
+"""Common utilities for Solver."""
 
 import abc
-import collections as py_collections
-from typing import Any, Dict, Optional, Tuple
-
-from absl import logging
-import ml_collections
+import enum
+import gurobipy as gu
+from math import isclose
 import numpy as np
+import scipy.sparse as sp
+import tensorflow as tf
+from typing import Any, Dict, Optional
 
-import calibration
 import data_utils
-import local_branching_data_generation as lns_data_gen
 import mip_utils
-import preprocessor
 import sampling
-import solution_data
-import solving_utils
 
 
-class BaseSolver(abc.ABC):
-    """Base class for solvers.
-
-    This class encapsulates an overall MIP solver / primal heuristic. We provide
-    three implementations, one wrapping around any classical solver (e.g. SCIP),
-    one implementing Neural Diving, and one implementing Neural Neighbourhood
-    Selection.
-
-    The API simply exposes a solve method which solves a given MIP and logs all
-    solution information inside a BaseSolutionData object.
-    """
-
-    def __init__(self,
-                 solver_config: ml_collections.ConfigDict,
-                 sampler: Optional[sampling.BaseSampler] = None):
-        self._solver_config = solver_config
-        self._sampler = sampler
-
-    @abc.abstractmethod
-    def solve(
-            self, mip_pth: Any, sol_data: solution_data.BaseSolutionData,
-            timer: calibration.Timer
-    ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
-        raise NotImplementedError('solve method should be implemented')
+class SolverState(enum.Enum):
+    INIT = 0
+    MODEL_LOADED = 1
+    FINISHED = 2
 
 
-class SCIPSolver(BaseSolver):
-    """Agent that solves MIP with SCIP."""
-
-    def solve(
-            self, mip_pth: Any, sol_data: solution_data.BaseSolutionData,
-            timer: calibration.Timer
-    ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
-        status, sol_data, _ = scip_solve(
-            mip_pth=mip_pth,
-            scip_solve_config=self._solver_config,
-            sol_data=sol_data,
-            timer=timer)
-        stats = {}
-        stats['solution_status'] = str(status)
-        return sol_data, stats
+type_map = {gu.GRB.BINARY: 0, gu.GRB.INTEGER: 1, gu.GRB.CONTINUOUS: 3}
+status_map = {gu.GRB.NONBASIC_LOWER: 0, gu.GRB.BASIC: 1, gu.GRB.NONBASIC_UPPER: 2, gu.GRB.SUPERBASIC: 3}
 
 
-class NeuralDivingSolver(BaseSolver):
-    """Solver that implements Neural Diving."""
-
-    def solve(
-            self, mip_pth: Any, sol_data: solution_data.BaseSolutionData,
-            timer: calibration.Timer
-    ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
-        sub_mip, stats = predict_and_create_sub_mip(
-            mip_pth, self._sampler, self._solver_config.predict_config)
-        status, sol_data, sub_mip_sol = scip_solve(
-            sub_mip, self._solver_config.scip_solver_config, sol_data, timer)
-        if self._solver_config.enable_restart:
-            status, sol_data, _ = scip_solve(
-                mip_pth, self._solver_config.restart_scip_solver_config, sol_data, timer,
-                sub_mip_sol)
-
-        stats['solution_status'] = str(status)
-        return sol_data, stats
+def _bytes_single_value_feature(value):
+    """Returns a bytes_list from a string / byte."""
+    if isinstance(value, type(tf.constant(0))):
+        value = value.numpy()  # BytesList won't unpack a string from an EagerTensor.
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
 
-class NeuralNSSolver(BaseSolver):
-    """Solver that implements Neural Neighbourhood Selection."""
-
-    def solve(
-            self, mip: Any, sol_data: solution_data.BaseSolutionData,
-            timer: calibration.Timer
-    ) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
-
-        # First run Neural Diving to get an initial incumbent solution:
-        diving_config = self._solver_config.diving_config
-        sampler_name = diving_config.predict_config.sampler_config.name
-        if sampler_name not in sampling.SAMPLER_DICT:
-            # Just run pure SCIP on original MIP in this case:
-            status, sol_data, incumbent_sol = scip_solve(
-                mip, diving_config.scip_solver_config, sol_data, timer)
-        else:
-            diving_sampler = sampling.SAMPLER_DICT[
-                diving_config.predict_config.sampler_config.name](
-                self._solver_config.diving_model)
-
-            sub_mip, _ = predict_and_create_sub_mip(mip, diving_sampler,
-                                                    diving_config.predict_config)
-            _, sol_data, incumbent_sol = scip_solve(sub_mip,
-                                                    diving_config.scip_solver_config,
-                                                    sol_data, timer)
-
-        if incumbent_sol is None:
-            logging.warn('Did not find incumbent solution for MIP: %s, skipping',
-                         mip.name)
-            return sol_data, {}
-
-        past_incumbents = py_collections.deque([incumbent_sol])
-
-        # Extract the root features here, as we need to expand by adding the values
-        # of the incumbent solution, which the model also saw during training.
-        root_features = data_utils.get_features(mip)
-        if root_features is None:
-            logging.warn('Could not extract features from MIP: %s, skipping',
-                         mip.name)
-            return sol_data, {}
-
-        dummy_columns = np.zeros((root_features['variable_features'].shape[0],
-                                  2 * lns_data_gen.NUM_PAST_INCUMBENTS + 1),
-                                 dtype=root_features['variable_features'].dtype)
-
-        root_features['variable_features'] = np.concatenate(
-            [root_features['variable_features'], dummy_columns], axis=1)
-
-        # Enhance the features with the incumbent solution:
-        features = lns_data_gen.enhance_root_features(root_features,
-                                                      past_incumbents, mip)
-
-        # The last column of enhanced features masks out continuous variables
-        num_integer_variables = np.sum(features['variable_features'][:, -1])
-        current_neighbourhood_size = int(self._solver_config.perc_unassigned_vars *
-                                         num_integer_variables)
-        sampler_params = self._solver_config.predict_config.sampler_config.params
-        update_dict = {'num_unassigned_vars': int(current_neighbourhood_size)}
-        sampler_params.update(update_dict)
-
-        # Keep and return stats from first step
-        sub_mip, stats = predict_and_create_lns_sub_mip(
-            mip, self._sampler, features.copy(), self._solver_config.predict_config)
-
-        for s in range(self._solver_config.num_solve_steps):
-            incumbent_sol = past_incumbents[0]
-            status, sol_data, improved_sol = scip_solve(
-                sub_mip, self._solver_config.scip_solver_config, sol_data, timer,
-                incumbent_sol)
-
-            logging.info('NLNS step: %s, solution status: %s', s, status)
-            if status in (mip_utils.MPSolverResponseStatus.OPTIMAL,
-                          mip_utils.MPSolverResponseStatus.INFEASIBLE,
-                          mip_utils.MPSolverResponseStatus.BESTSOLLIMIT):
-                current_neighbourhood_size = min(
-                    current_neighbourhood_size * self._solver_config.temperature,
-                    0.6 * num_integer_variables)
-            else:
-                current_neighbourhood_size = max(
-                    current_neighbourhood_size // self._solver_config.temperature, 20)
-            logging.info('Updated neighbourhood size to: %s',
-                         int(current_neighbourhood_size))
-
-            sampler_params = self._solver_config.predict_config.sampler_config.params
-            update_dict = {'num_unassigned_vars': int(current_neighbourhood_size)}
-            sampler_params.update(update_dict)
-            logging.info('%s', self._solver_config.predict_config)
-
-            if improved_sol is None:
-                break
-            # Add improved solution to buffer.
-            past_incumbents.appendleft(improved_sol)
-            if len(past_incumbents) > lns_data_gen.NUM_PAST_INCUMBENTS:
-                past_incumbents.pop()
-
-            # Recompute the last two columns of the features with new incumbent:
-            features = lns_data_gen.enhance_root_features(root_features,
-                                                          past_incumbents, mip)
-
-            # Compute the next sub-MIP based on new incumbent:
-            sub_mip, _ = predict_and_create_lns_sub_mip(
-                mip, self._sampler, features.copy(),
-                self._solver_config.predict_config)
-
-        stats['solution_status'] = str(status)
-        return sol_data, stats
+def _bytes_feature(value):
+    """Returns a bytes_list from a string / byte."""
+    if isinstance(value, type(tf.constant(0))):
+        value = value.numpy()  # BytesList won't unpack a string from an EagerTensor.
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
 
 
-def scip_solve(
-        mip_pth: Any,
-        scip_solve_config: ml_collections.ConfigDict,
-        sol_data: solution_data.BaseSolutionData,
-        timer: calibration.Timer,
-        best_known_sol: Optional[Any] = None
-) -> Tuple[mip_utils.MPSolverResponseStatus, solution_data.BaseSolutionData,
-           Optional[Any]]:
-    """Uses SCIP to solve the MIP and writes solutions to SolutionData.
-
-    Args:
-      mip_pth: MIP to be solved
-      scip_solve_config: config for SCIPWrapper
-      sol_data: SolutionData to write solving data to
-      timer: timer to use to record real elapsed time and (possibly) calibrated
-        elapsed time
-      best_known_sol: previously known solution for the MIP to start solving
-        process with
-
-    Returns:
-       Status of the solving process.
-       SolutionData with filled solution data. All solutions are converted to the
-         original space according to SolutionDataWrapper transform functions
-       Best solution to the MIP passed to SCIP, not retransformed by SolutionData
-         to the original space (this is convenient for restarts)
-    """
-    # Initialize SCIP solver and load the MIP
-    # todo: make this just read an LP file
-    mip_solver = solving_utils.Solver()
-    mip_solver.load_model(mip_pth)
-
-    # Try to load the best known solution to SCIP
-    if best_known_sol is not None:
-        added = mip_solver.add_solution(best_known_sol)
-        if added:
-            logging.info('Added solution to SCIP with obj: %f',
-                         best_known_sol.objective_value)
-        else:
-            logging.warn('Could not add solution to SCIP')
-
-    # Solve the MIP with given config
-    try:
-        status = mip_solver.solve(scip_solve_config.params)
-    finally:
-        best_solution = mip_solver.get_best_solution()
-
-    # Add final solution to the solution data
-    if best_solution is not None:
-        log_entry = {}
-        log_entry['best_primal_point'] = best_solution
-        log_entry['primal_bound'] = best_solution.objective_value
-        log_entry['solving_time'] = timer.elapsed_real_time
-        log_entry['solving_time_calibrated'] = timer.elapsed_calibrated_time
-        sol_data.write(log_entry, force_save_sol=True)
-    return status, sol_data, best_solution
+def _float_feature(value):
+    """Returns a float_list from a float / double."""
+    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
 
 
-def predict_and_create_sub_mip(
-        mip: Any, sampler: sampling.BaseSampler,
-        config: ml_collections.ConfigDict) -> Tuple[Any, Dict[str, Any]]:
-    """Takes in a MIP and a config and outputs a sub-MIP.
-
-    If the MIP is found infeasible or trivially optimal during feature extraction,
-    then no SuperMIP reductions are applied and the original MIP is passed back.
-
-    Args:
-      mip: MIP that is used to produce a sub-MIP
-      sampler: Sampler used to produce predictions
-      config: config used to feature extraction and model sampling
-
-    Returns:
-      (sub-)MIP
-      Dict with assignment stats:
-        num_variables_tightened: how many variables were tightened in an assigment
-        num_variables_cut: how many variables were used in an invalid cut, usually
-          0 (if cut was enabled) or all of them (if cut was disabled).
-    """
-    # Step 1: Extract MIP features
-    features = data_utils.get_features(
-        mip, solver_params=config.extract_features_scip_config)
-    if features is None:
-        logging.warn('Could not extract features from MIP: %s, skipping', mip.name)
-        return mip, {}
-
-    # Step 2: Perform sampling
-    node_indices = features['binary_variable_indices']
-    var_names = features['variable_names']
-    variable_lbs = features['variable_lbs']
-    variable_ubs = features['variable_ubs']
-    graphs_tuple = data_utils.get_graphs_tuple(features)
-
-    # removed var_ubs since we fix to lower bounds
-    assignment = sampler.sample(graphs_tuple, var_names, variable_lbs,
-                                node_indices, **config.sampler_config.params)
-    sub_mip = mip_utils.make_sub_mip(mip, assignment)
-
-    return sub_mip
+def _int64_feature(value):
+    """Returns an int64_list from a bool / enum / int / uint."""
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
 
-def predict_and_create_lns_sub_mip(
-        mip: Any, sampler: sampling.BaseSampler, features: Any,
-        config: ml_collections.ConfigDict) -> Tuple[Any, Dict[str, Any]]:
-    """Produces a sub-MIP for LNS derived from model predictions.
-
-    This function uses the provided sampler to predict which binary variables of
-    the MIP should be unassigned. From this prediction we derive a sub-MIP where
-    the remaining variables are fixed to the values provided in `incumbent_dict`.
-
-    Args:
-      mip: MIP that is used to produce a sub-MIP
-      sampler: SuperMIP sampler used to produce predictions
-      features: Model features used for sampling.
-      config: config used to feature extraction and model sampling
-
-    Returns:
-      (sub-)MIP
-      Dict with assignment stats:
-        num_variables_tightened: how many variables were tightened in an assigment
-        num_variables_cut: how many variables were used in an invalid cut, usually
-          0 (if cut was enabled) or all of them (if cut was disabled).
-    """
-    node_indices = features['binary_variable_indices']
-    var_names = features['variable_names']
-    var_values = np.asarray([var_name.decode() for var_name in var_names])
-    graphs_tuple = data_utils.get_graphs_tuple(features)
-
-    assignment = sampler.sample(graphs_tuple, var_names, var_values, node_indices,
-                                **config.sampler_config.params)
-    sub_mip = mip_utils.make_sub_mip(mip, assignment)
-
-    return sub_mip
-
-
-SOLVING_AGENT_DICT = {
-    'scip': SCIPSolver,
-    'neural_diving': NeuralDivingSolver,
-    'neural_ns': NeuralNSSolver,
+feature_type = {
+    'constraint_features': _bytes_single_value_feature,
+    'edge_features': _bytes_single_value_feature,
+    'edge_indices': _bytes_single_value_feature,
+    'variable_features': _bytes_single_value_feature,
+    'variable_lbs': _float_feature,
+    'variable_ubs': _float_feature,
+    'constraint_feature_names': _bytes_single_value_feature,
+    'variable_feature_names': _bytes_single_value_feature,
+    'edge_features_names': _bytes_single_value_feature,
+    'variable_names': _bytes_feature,
+    'binary_variable_indices': _int64_feature,
+    'all_integer_variable_indices': _int64_feature,
+    'model_maximize': _int64_feature,
+    'best_solution_labels': _float_feature,
 }
 
 
-def run_solver(
-        mip: Any, solver_running_config: ml_collections.ConfigDict,
-        solver: BaseSolver
-) -> Tuple[solution_data.BaseSolutionData, Dict[str, Any]]:
-    """End-to-end MIP solving with a Solver.
+class Solver(abc.ABC):
+    """Wrapper around a given classical MIP solver.
 
-    Args:
-      mip: MIP that is used to produce a sub-MIP
-      solver_running_config: config to run the provided solver
-      solver: initialized solver to be used
-
-    Returns:
-      SolutionData
-      Dict with additional stats:
-        solution_status: the returned status by the solver.
-        elapsed_time_seconds: end-to-end time for instance in real time seconds.
-        elapsed_time_calibrated: end-to-end time for instance in calibrated time.
-      And for NeuralDivingSolver, additionally:
-        num_variables_tightened: how many variables were tightened in an
-          assigment
-        num_variables_cut: how many variables were used in an invalid cut,
-          usually 0 (if cut was enabled) or all of them (if cut was disabled).
+    This class contains the API needed to communicate with a MIP solver, e.g.
+    SCIP.
     """
 
-    # Stage 1: set up a timer
-    timer = calibration.Timer()
-    timer.start_and_wait()
+    def __init__(self, sampler: sampling.RepeatedCompetitionSampler = None):
+        super().__init__()
+        self.m = None
+        self.sampler = sampler
 
-    # Stage 2: presolve the original MIP instance
-    presolver = None
-    presolved_mip = mip
-    if solver_running_config.preprocessor_configs is not None:
-        presolver = preprocessor.Preprocessor(
-            solver_running_config.preprocessor_configs)
-        _, presolved_mip = presolver.presolve(mip)
+    def load_model(self, mip_pth: str, silence: bool = True) -> SolverState:
+        """Loads a MIP model into the solver."""
+        env = gu.Env(empty=True)
+        if silence:
+            env.setParam('OutputFlag', 0)
+        env.start()
+        self.m = gu.read(mip_pth, env=env)
+        self.m.setParam('MIPGap', 0.01)
+        return SolverState.MODEL_LOADED
 
-    # Stage 3: setup solution data
-    objective_type = max if mip.maximize else min
-    sol_data = solution_data.SolutionData(
-        objective_type=objective_type,
-        write_intermediate_sols=solver_running_config.write_intermediate_sols)
-    if presolver is not None:
-        sol_data = solution_data.SolutionDataWrapper(
-            sol_data, sol_transform_fn=presolver.get_original_solution)
+    def solve(self, **kwargs) -> mip_utils.MPSolverResponseStatus:
+        """Solves the loaded MIP model."""
+        self.m.optimize()
+        assert self.m.status == gu.GRB.OPTIMAL
+        return mip_utils.MPSolverResponseStatus.OPTIMAL
 
-    # Stage 4: Solve MIP
-    sol_data, solve_stats = solver.solve(presolved_mip, sol_data, timer)
+    def get_best_solution(self) -> Optional[Any]:
+        """Returns the best solution found from the last solve call."""
+        assert self.m.status == gu.GRB.OPTIMAL
+        assert [v.index for v in self.m.getVars()] == list(range(self.m.NumVars)), \
+            "we need to assume that variables are in the same order as columns"
 
-    timer.terminate_and_wait()
-    solve_stats['elapsed_time_seconds'] = timer.elapsed_real_time
-    solve_stats['elapsed_time_calibrated'] = timer.elapsed_calibrated_time
-    return sol_data, solve_stats
+        return np.array([v.x for v in self.m.getVars()]).reshape(-1, 1)
+
+    def extract_lp_features_at_root(self, training: bool = True) -> Dict[str, Any]:
+        """Returns a dictionary of root node features."""
+
+        assert [v.index for v in self.m.getVars()] == list(range(self.m.NumVars)), \
+            "we need to assume that variables are in the same order as columns"
+
+        assert [c.index for c in self.m.getConstrs()] == list(range(len(self.m.getConstrs()))), \
+            "we need to assume that constraints are in the same order as rows"
+
+        # some values we'll reuse
+        objective = np.array([v.Obj for v in self.m.getVars()])
+        obj_norm = np.linalg.norm(objective)
+        obj_norm = 1 if obj_norm <= 0 else obj_norm
+        A = self.m.getA().toarray()
+        row_norms = np.linalg.norm(A, axis=1)
+        row_norms[row_norms == 0] = 1
+
+        # features already available
+        lbs = np.array([max(v.LB, -1e10) for v in self.m.getVars()])
+        ubs = np.array([min(v.UB, 1e10) for v in self.m.getVars()])
+        binary_idxs = np.array([v.index for v in self.m.getVars() if v.VType == gu.GRB.BINARY],
+                               dtype=np.int64)
+        integer_idxs = np.array([v.index for v in self.m.getVars() if v.VType == gu.GRB.INTEGER],
+                                dtype=np.int64)
+        variable_names = [v.VarName for v in self.m.getVars()]
+        model_maximize = np.array([int(self.m.ModelSense == gu.GRB.MAXIMIZE)], dtype=np.int64)
+
+        # solve the root relaxation
+        relax = self.m.relax()
+        relax.optimize()
+
+        # Column features - for unsures I think 0 is reasonable since this is the first LP solved
+        col_feats = {}
+        col_feats['age'] = np.zeros((self.m.NumVars, 1))  # unsure how this is calculated
+        col_feats['avg_inc_val'] = np.zeros((self.m.NumVars, 1))  # unsure how this is calculated
+        col_feats['basis_status'] = np.zeros((self.m.NumVars, 4))  # LOWER BASIC UPPER ZERO
+        status_codes = [status_map[v.VBasis] for v in relax.getVars()]
+        col_feats['basis_status'][np.arange(self.m.NumVars), status_codes] = 1
+        col_feats['coef_normalized'] = objective.reshape(-1, 1) / obj_norm
+        col_feats['has_lb'] = (lbs > -float('inf')).astype(np.int64).reshape(-1, 1)
+        col_feats['has_ub'] = (ubs < float('inf')).astype(np.int64).reshape(-1, 1)
+        col_feats['inc_val'] = np.zeros((self.m.NumVars, 1))  # unsure how this is calculated
+        reduced_costs = [v.RC for v in relax.getVars()]
+        col_feats['reduced_cost'] = np.array(reduced_costs).reshape(-1, 1) / obj_norm
+        col_feats['sol_frac'] = np.array([v.x % 1 for v in relax.getVars()]).reshape(-1, 1)
+        # continuous have no fractionality
+        col_feats['sol_frac'][[v.VType == gu.GRB.CONTINUOUS for v in self.m.getVars()]] = 0
+        at_lb = [int(isclose(v.LB, v.x, abs_tol=1e-4)) for v in relax.getVars()]
+        col_feats['sol_is_at_lb'] = np.array(at_lb).reshape(-1, 1)
+        at_ub = [int(isclose(v.UB, v.x, abs_tol=1e-4)) for v in relax.getVars()]
+        col_feats['sol_is_at_ub'] = np.array(at_ub).reshape(-1, 1)
+        col_feats['sol_val'] = np.array([v.x for v in relax.getVars()]).reshape(-1, 1)
+        # changed columns from 4 to 11 to account for 7 extra columns needed for LNS incumbents
+        # leave the 7 extra columns as zero since we don't use LNS
+        col_feats['type'] = np.zeros((self.m.NumVars, 11))  # BINARY INTEGER IMPLINT CONTINUOUS
+        type_codes = [type_map[v.VType] for v in self.m.getVars()]
+        col_feats['type'][np.arange(self.m.NumVars), type_codes] = 1
+
+        col_feat_names = [
+            [k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])]
+            for k, v in col_feats.items()
+        ]
+        col_feat_names = [n for names in col_feat_names for n in names]
+        col_feat_vals = np.concatenate(list(col_feats.values()), axis=-1)
+        if training:
+            col_feat_vals = col_feat_vals.astype(np.float32)
+
+        # Row features
+        row_feats = {}
+        # all have same age, which is 0th LP relaxation
+        row_feats['age'] = np.zeros(self.m.NumConstrs).reshape(-1, 1)
+        rhs = np.array([c.RHS for c in self.m.getConstrs()])
+        row_feats['bias'] = np.array(rhs / row_norms).reshape(-1, 1)
+        duals = np.array([c.Pi for c in relax.getConstrs()])
+        row_feats['dualsol_val_normalized'] = (duals / (row_norms * obj_norm)).reshape(-1, 1)
+        row_feats['is_tight'] = np.array([int(isclose(c.Slack, 0, abs_tol=1e-4))
+                                          for c in relax.getConstrs()], dtype=np.int64).reshape(-1, 1)
+        row_feats['obj_cosine_similarity'] = (np.dot(A, objective) / (row_norms * obj_norm)).reshape(-1, 1)
+
+        row_feat_names = [[k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])] for k, v in
+                          row_feats.items()]
+        row_feat_names = [n for names in row_feat_names for n in names]
+        row_feat_vals = np.concatenate(list(row_feats.values()), axis=-1)
+        if training:
+            row_feat_vals = row_feat_vals.astype(np.float32)
+
+        # Edge features - normalize the coef matrix
+        coef_matrix = sp.coo_matrix(self.m.getA() / row_norms.reshape(-1, 1))
+        edge_row_idxs, edge_col_idxs = coef_matrix.row, coef_matrix.col
+        edge_feats = {'coef_normalized': coef_matrix.data.reshape(-1, 1)}
+
+        edge_feat_names = [[k, ] if v.shape[1] == 1 else [f'{k}_{i}' for i in range(v.shape[1])] for k, v in
+                           edge_feats.items()]
+        edge_feat_names = [n for names in edge_feat_names for n in names]
+        edge_feat_indices = np.vstack([edge_row_idxs, edge_col_idxs]).T.astype(np.int64)
+        edge_feat_vals = np.concatenate(list(edge_feats.values()), axis=-1)
+        if training:
+            edge_feat_vals = edge_feat_vals.astype(np.float32)
+
+        features = {
+            'edge_features_names': edge_feat_names,
+            'best_solution_labels': np.array([]),
+            'edge_features': edge_feat_vals,
+            'binary_variable_indices': binary_idxs,
+            'variable_ubs': ubs,
+            'edge_indices': edge_feat_indices,
+            'variable_feature_names': col_feat_names,
+            'model_maximize': model_maximize,
+            'constraint_features': row_feat_vals,
+            'variable_lbs': lbs,
+            'all_integer_variable_indices': integer_idxs,
+            'variable_names': variable_names,
+            'variable_features': col_feat_vals,
+            'constraint_feature_names': row_feat_names
+        }
+
+        return features
+
+    def encode_features(self, features):
+
+        # encode string and 2-D arrays to bytes
+        features['variable_names'] = [n.encode('utf-8') for n in features['variable_names']]
+        for name in ['edge_features_names', 'variable_feature_names', 'constraint_feature_names']:
+            features[name] = ','.join([n for n in features[name]]).encode('utf-8')
+        for name in ['edge_features', 'variable_features', 'constraint_features', 'edge_indices']:
+            features[name] = tf.io.serialize_tensor(features[name])
+
+        # convert all values to tf.train.Feature
+        features = {k: feature_type[k](v) for k, v in features.items()}
+        example = tf.train.Example(features=tf.train.Features(feature=features))
+        return example
+
+    def extract_labeled_features(self):
+        features = self.extract_lp_features_at_root()
+        self.solve()
+        features['best_solution_labels'] = self.get_best_solution()
+        return features
+
+
+class DirectSolver(Solver):
+    """Agent that solves MIP directly with Gurobi."""
+
+    def solve(self) -> Dict[str, Any]:
+        self.m.optimize()
+        stats = {
+            'direct optimal': self.m.status == gu.GRB.OPTIMAL,
+            'direct time': self.m.runtime
+        }
+        return stats
+
+
+class NeuralDivingSolver(Solver):
+    """Solver that implements Neural Diving with Gurobi."""
+
+    def solve(self, num_unassigned_vars: int) -> Dict[str, Any]:
+        # using partial mip starts is really slow so trying to provide a full start instead
+        # capture which variables to fix
+        features = self.extract_lp_features_at_root(training=False)
+        graphs_tuple = data_utils.get_graphs_tuple(features)
+        assignment = self.sampler.sample(graphs_tuple, features['variable_names'],
+                                         features['variable_lbs'], features['binary_variable_indices'],
+                                         num_unassigned_vars=num_unassigned_vars)
+
+        # create and solve the submip
+        sub_m = self.m.copy()  # will know if copied parameters if silences
+        for name, val in zip(assignment.names, assignment.upper_bounds):
+            sub_m.getVarByName(name).ub = val
+        sub_m.optimize()
+
+        # provide its solution to the original mip if feasible
+        if sub_m.status == gu.GRB.OPTIMAL:
+            self.m.NumStart = 1
+            self.m.params.StartNumber = 0
+            for v in self.m.getVars():
+                v.start = sub_m.getVarByName(v.varName).X
+
+        self.m.optimize()
+        stats = {
+            'neural diving optimal': self.m.status == gu.GRB.OPTIMAL,
+            'neural diving time': self.m.runtime + sub_m.runtime
+        }
+        return stats

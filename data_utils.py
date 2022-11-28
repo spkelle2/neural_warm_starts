@@ -20,9 +20,6 @@ from graph_nets import graphs
 import ml_collections
 import tensorflow.compat.v2 as tf
 
-import mip_utils
-import preprocessor
-import solving_utils
 
 BIAS_FEATURE_INDEX = 1
 SOLUTION_FEATURE_INDEX = 14
@@ -185,18 +182,6 @@ def get_graphs_tuple(state: Dict[str, Any]) -> graphs.GraphsTuple:
         state_with_bounds, node_depth=1)
     graphs_tuple = convert_to_minimization(graphs_tuple, state_with_bounds)
     return graphs_tuple
-
-
-def get_features(
-        mip: str,
-        solver_params: ml_collections.ConfigDict = SCIP_FEATURE_EXTRACTION_PARAMS
-) -> Optional[Dict[str, Any]]:
-    """Extracts and preprocesses the features from the root of B&B tree."""
-    mip_solver = solving_utils.Solver()
-    status = mip_solver.load_model(mip)
-    features = mip_solver.extract_lp_features_at_root(solver_params)
-
-    return features
 
 
 def apply_feature_scaling(state, labels):

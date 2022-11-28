@@ -237,14 +237,13 @@ def train_and_evaluate(
                          f'{valid_acc:.4f} auc = {valid_auc:.4f} ' +
                          f'loss = {valid_loss:.4f}')
 
+    model.save_model(model_dir)
     saved_ckpt = ckpt_manager.save()
     logging.info('Saved checkpoint: %s', saved_ckpt)
 
 
 def main(_):
     flags_config = FLAGS.config
-    tf.config.threading.set_intra_op_parallelism_threads(4)
-    tf.config.threading.set_inter_op_parallelism_threads(4)
     gpus = tf.config.experimental.list_logical_devices(device_type='GPU')
     if gpus:
         logging.info('Found GPUs: %s', gpus)

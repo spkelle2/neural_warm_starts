@@ -22,7 +22,7 @@ import ml_collections
 import numpy as np
 
 import mip_utils
-import solving_utils
+import solvers
 
 
 def get_binary_local_branching_mip(mip: mip_utils.MPModel,

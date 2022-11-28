@@ -2,14 +2,17 @@ name: neural_lns
 channels:
   - apple
   - conda-forge
+  - gurobi
 dependencies:
   - python
   - pip
   - tensorflow-deps
   - absl-py
   - scipy
+  - pandas
   - wheel
   - pyscipopt
+  - gurobi
   - pip:
     - tensorflow-macos
     # - tensorflow-metal

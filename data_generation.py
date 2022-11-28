@@ -1,7 +1,7 @@
 import os
 import tensorflow as tf
 
-from solving_utils import Solver
+from solvers import Solver
 
 
 def main(instance_type: str):
@@ -16,6 +16,8 @@ def main(instance_type: str):
                                'data/samples', instance_type)
 
     for subdir_name in os.listdir(instance_root):
+        if 'test' in subdir_name:
+            continue
         for i, file_name in enumerate(os.listdir(os.path.join(instance_root, subdir_name))):
 
             print(f'generating directory {subdir_name} instance {i + 1}')
@@ -35,4 +37,4 @@ def main(instance_type: str):
 
 
 if __name__ == '__main__':
-    main(instance_type='facilities')
+    main(instance_type='schedules')
