@@ -295,6 +295,9 @@ class NeuralDivingSolver(Solver):
         self.m.optimize()
         stats = {
             'neural diving optimal': self.m.status == gu.GRB.OPTIMAL,
-            'neural diving time': self.m.runtime + sub_m.runtime
+            'neural diving time': self.m.runtime + sub_m.runtime,
+            'neural diving objective': self.m.objVal,
+            'submip time': sub_m.runtime,
+            'submip objective': sub_m.objVal,
         }
         return stats
