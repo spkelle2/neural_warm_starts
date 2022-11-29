@@ -5,9 +5,10 @@ from solvers import Solver
 
 
 def main(instance_type: str):
-    """ Take a collection of directories and return
+    """ Converts directories of .lp files to directories of .tfrecord files
+    consisting of lp root features and mip solution labels
 
-    :param instance_type:
+    :param instance_type: which problem type to use
     :return:
     """
 

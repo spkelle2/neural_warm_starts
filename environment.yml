@@ -1,4 +1,4 @@
-name: neural_lns
+name: neural_diving
 channels:
   - apple
   - conda-forge

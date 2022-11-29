@@ -24,7 +24,6 @@ import tensorflow as tf
 from typing import Any, Dict, Optional
 
 import data_utils
-import mip_utils
 import sampling
 
 
@@ -102,11 +101,10 @@ class Solver(abc.ABC):
         self.m.setParam('MIPGap', 0.01)
         return SolverState.MODEL_LOADED
 
-    def solve(self, **kwargs) -> mip_utils.MPSolverResponseStatus:
+    def solve(self, **kwargs) -> None:
         """Solves the loaded MIP model."""
         self.m.optimize()
         assert self.m.status == gu.GRB.OPTIMAL
-        return mip_utils.MPSolverResponseStatus.OPTIMAL
 
     def get_best_solution(self) -> Optional[Any]:
         """Returns the best solution found from the last solve call."""
