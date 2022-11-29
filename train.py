@@ -51,7 +51,7 @@ def train_and_evaluate(
         raise ValueError(
             'eval_every_steps is not divisible by num_train_run_steps')
 
-    # read in data Todo: how to generate tfrecord file and data inside it
+    # read in data
     train_ds_all = []
     for path, _ in train_datasets:
         train_ds = data_utils.get_dataset(path)
@@ -101,8 +101,7 @@ def train_and_evaluate(
                     labels=ds_tuple.integer_labels)
                 # label * -log(sigmoid(logit)) + (1 - label) * -log(1 - sigmoid(logit))
                 # this reduces to the negative probability we predicted the binary label correctly
-                # todo: this should be weighted by the quality of the objective value, but don't see that
-                # well actually we just use optimal solutions so no need to weight quality
+                # we don't need to weight solution quality since we just use optimal solutions
                 local_loss = tf.nn.sigmoid_cross_entropy_with_logits(
                     labels=tf.cast(ds_tuple.integer_labels, tf.float32),
                     logits=logits)
@@ -199,7 +198,7 @@ def train_and_evaluate(
         model=model, optimizer=optimizer, global_step=global_step)
     ckpt_manager = tf.train.CheckpointManager(
         checkpoint=ckpt, directory=model_dir, max_to_keep=5)
-    # restore check pointed values to the model (todo: should be able to pull trained model from here to make predictions)
+    # restore check pointed values to the model
     ckpt.restore(ckpt_manager.latest_checkpoint)
     if ckpt_manager.latest_checkpoint:
         logging.info('Restored from %s', ckpt_manager.latest_checkpoint)

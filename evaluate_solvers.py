@@ -48,6 +48,7 @@ def main(instance_type: str, unassigned_factor: int):
             # for each item we accept 1 bid, so select <unassigned_factor>x as many options (2 is good)
             num_unassigned_vars = int(unassigned_factor * n_items)
 
+        # compare warm and cold starts
         for i, file_name in enumerate(os.listdir(os.path.join(instance_root, subdir_name))):
             if i >= 10:
                 continue
@@ -65,6 +66,7 @@ def main(instance_type: str, unassigned_factor: int):
             neural_diving_data = nds.solve(num_unassigned_vars=num_unassigned_vars)
             data[subdir_name, file_root] = {**direct_data, **neural_diving_data}
 
+    # save the runs
     df = pd.DataFrame.from_dict(data, orient='index')
     df.reset_index(inplace=True)
     df.columns = ['instance set', 'instance name'] + list(df.columns[2:])

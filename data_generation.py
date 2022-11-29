@@ -5,6 +5,11 @@ from solvers import Solver
 
 
 def main(instance_type: str):
+    """ Take a collection of directories and return
+
+    :param instance_type:
+    :return:
+    """
 
     # data checks
     assert instance_type in ['facilities', 'schedules', 'cauctions']

@@ -84,7 +84,7 @@ class Solver(abc.ABC):
     """Wrapper around a given classical MIP solver.
 
     This class contains the API needed to communicate with a MIP solver, e.g.
-    SCIP.
+    Gurobi.
     """
 
     def __init__(self, sampler: sampling.RepeatedCompetitionSampler = None):
@@ -249,6 +249,7 @@ class Solver(abc.ABC):
         return example
 
     def extract_labeled_features(self):
+        """Create the root feature set along with optimal solution"""
         features = self.extract_lp_features_at_root()
         self.solve()
         features['best_solution_labels'] = self.get_best_solution()
