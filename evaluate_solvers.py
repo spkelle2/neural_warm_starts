@@ -7,6 +7,14 @@ from solvers import NeuralDivingSolver, DirectSolver
 
 
 def main(instance_type: str, unassigned_factor: int):
+    """ Compares the solve time of a discrete optimization solver when warm started
+    with a predicted solution vs cold started
+
+    :param instance_type: which problem type to use
+    :param unassigned_factor: multiple of number of solutions that will take value 1
+    to leave unassigned
+    :return:
+    """
 
     # data checks
     assert instance_type in ['facilities', 'schedules', 'cauctions']
@@ -25,11 +33,13 @@ def main(instance_type: str, unassigned_factor: int):
     for subdir_name in os.listdir(instance_root):
         if ('transfer' not in subdir_name) and ('train' not in subdir_name):
             continue
+
+        # set number of unassigned variables
         if instance_type == 'facilities':
             n_cust, n_facilities, ratio = [int(n) for n in re.match(r'^\w+_(\d+)_(\d+)_(\d+)$', subdir_name).groups()]
             # give ourselves <unassigned_factor> as many warehouses as cover capacity (2 is good)
             num_unassigned_vars = int(unassigned_factor * ratio * n_cust / n_facilities)
-        if instance_type == 'schedule':
+        if instance_type == 'schedules':
             n_weeks, n_teams, ratio = [int(n) for n in re.match(r'^\w+_(\d+)_(\d+)_(\d+)$', subdir_name).groups()]
             # each week we have n_teams/2 games, so give ourselves <unassigned_factor>x as many options (2 is good)
             num_unassigned_vars = int(unassigned_factor * n_weeks * n_teams)
@@ -63,4 +73,4 @@ def main(instance_type: str, unassigned_factor: int):
 
 
 if __name__ == '__main__':
-    main('facilities', unassigned_factor=2)
+    main('cauctions', unassigned_factor=2)

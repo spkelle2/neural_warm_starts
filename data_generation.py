@@ -7,7 +7,7 @@ from solvers import Solver
 def main(instance_type: str):
 
     # data checks
-    assert instance_type in ['facilities', 'schedules']
+    assert instance_type in ['facilities', 'schedules', 'cauctions']
 
     # declare script level variables
     instance_root = os.path.join(os.path.dirname(os.path.realpath(__file__)),
@@ -37,4 +37,4 @@ def main(instance_type: str):
 
 
 if __name__ == '__main__':
-    main(instance_type='schedules')
+    main(instance_type='cauctions')

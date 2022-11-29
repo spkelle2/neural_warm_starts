@@ -48,9 +48,9 @@ def get_config():
 
     # Each entry is a pair of (<dataset_path>, <prefix>).
     sample_train = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                'data/samples/schedules/train_8_20_5')
+                                'data/samples/cauctions/train_100_500')
     sample_valid = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                'data/samples/schedules/valid_8_20_5')
+                                'data/samples/cauctions/valid_100_500')
     config.train_datasets = [
         (os.path.join(sample_train, instance), 'train') for instance in os.listdir(sample_train)
     ]
