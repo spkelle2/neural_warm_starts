@@ -18,10 +18,17 @@ documentation is available within each file:
 * __layer_norm.py__: Model layer normalisation and dropout utilities.
 * __light_gnn.py__: The GNN model used for training.
 * __sampling.py__: Sampling strategies for Neural LNS.
-* __solution_data.py__: SolutionData classes used to log solution process.
 * __solvers.py__: Neural diving and feature generation implementation.
 * __train.py__: Training script for neural diving model.
 * __data__: Directory with tfrecord files to run training.
+
+This project borrows `config_train.py`, `data_utils.py`, `layer_norm.py`,
+`light_gnn.py`, `sampling.py`, and `train.py` from [Neural Local Neighborhood
+Search](https://github.com/deepmind/neural_lns) and `instance_generation.py` from
+[Learn2Branch](https://github.com/ds4dm/learn2branch) (respectively the implementations
+for the two papers linked above). Our contributions are `data_generation.py`,
+`evaluate_solvers.py`, and `solvers.py`, which form the glue code for the borrowed
+files.
 
 ## Installation
 
