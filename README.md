@@ -1,4 +1,5 @@
 # Learning Initial Solutions to Mixed-Integer Programs
+By Nick Masri, Sean Kelley, Michael Nardelli for CSE 498
 
 ### Overview
 
