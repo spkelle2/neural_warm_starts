@@ -126,7 +126,7 @@ class LightGNN(snt.Module):
                  node_indices: tf.Tensor,
                  labels: tf.Tensor,
                  **unused_args) -> tf.Tensor:
-        # label data dimensions (todo: number of variables and bits per variable?)
+        # label data dimensions
         n = tf.shape(labels)[0]
         b = tf.shape(labels)[1]
         # take MILP graph and create an H dimensional vector for each node
@@ -135,7 +135,7 @@ class LightGNN(snt.Module):
         nodes = self.encode_graph(graph, is_training)  # pass through GCN. is_training applies dropout
         # sonnet infers input sizes which is how we go from 64 to 32 to 1 length vectors for each node via mlp below
         all_logits = self.output_model(nodes)
-        # subselect bit predictions for nodes corresponding to variables (todo: how do we make sure to get all predictions when multiple bits/variable?)
+        # subselect bit predictions for nodes corresponding to variables
         logits = tf.expand_dims(tf.gather(all_logits, node_indices), axis=-1)
         logits = tf.broadcast_to(logits, [n, b, 1])
 

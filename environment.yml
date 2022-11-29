@@ -1,0 +1,22 @@
+name: neural_diving
+channels:
+  - apple
+  - conda-forge
+  - gurobi
+dependencies:
+  - python
+  - pip
+  - tensorflow-deps
+  - absl-py
+  - scipy
+  - pandas
+  - wheel
+  - pyscipopt
+  - gurobi
+  - pip:
+    - tensorflow-macos
+    # - tensorflow-metal
+    - tensorflow_probability
+    - dm-sonnet
+    - ml_collections
+    - graph_nets

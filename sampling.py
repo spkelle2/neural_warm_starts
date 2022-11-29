@@ -62,7 +62,6 @@ class BaseSampler(metaclass=abc.ABCMeta):
             graphs_tuple: graphs.GraphsTuple,
             var_names: np.ndarray,
             lbs: np.ndarray,
-            ubs: np.ndarray,
             node_indices: np.ndarray,
             **kwargs) -> Assignment:
         """Returns a sample assignment for given inputs.
@@ -133,8 +132,7 @@ class RandomSampler(BaseSampler):
                 var_names_to_assign.append(var_name)
                 var_values_to_assign.append(val)
 
-        return Assignment(
-            var_names_to_assign, var_values_to_assign, var_values_to_assign)
+        return Assignment(var_names_to_assign, var_values_to_assign, var_values_to_assign)
 
 
 class RepeatedCompetitionSampler(BaseSampler):
@@ -158,7 +156,7 @@ class RepeatedCompetitionSampler(BaseSampler):
         Args:
           graphs_tuple: GraphsTuple to produce samples for.
           var_names: Variable names array.
-          var_values: Variable values.
+          var_values: Value to fix a variable to if it's chosen to be fixed
           node_indices: Node indices array for which to produce predictions.
           num_unassigned_vars: The number of variables to keep free in the submip.
           probability_power: powers the probabilities to smoothen the distribution,
@@ -168,16 +166,18 @@ class RepeatedCompetitionSampler(BaseSampler):
         Returns:
           Sampler's assignment.
         """
+        # datasetuple.integer_node_indices for last arg
+        # probs are likelihood each binary variable takes value 1
         proba = sample_probas(self.model, graphs_tuple, node_indices)
         proba = np.squeeze(proba) + eps
 
-        num_top_vars = np.min([num_unassigned_vars, len(proba)])
+        num_top_vars = np.min([num_unassigned_vars, len(proba)])  # number unassigned variables
 
         unfixed_variables = set()
         for _ in range(num_top_vars):
             # NB `proba` has the probabilities for the variables corresponding to
             # `node_indices` only. So the result of `argsort` gives us the indices of
-            # the right indices in `node_indices`.
+            # the corresponding indices in `node_indices`.
 
             round_proba = proba.copy()
             if probability_power is not None:
@@ -186,15 +186,14 @@ class RepeatedCompetitionSampler(BaseSampler):
 
             var_idx = tfp.distributions.Categorical(probs=round_proba).sample()
 
-            unfixed_variables.add(var_idx.numpy())
+            unfixed_variables.add(var_idx.numpy())  # values correspond to indices of node_indices
             proba[var_idx] = 0.
 
-        accept_mask = []
-        for idx in range(len(var_names)):
-            # Fix all binary vars except the ones with highest flip prediction.
-            # Leave the non-binary vars unfixed, too.
-            fix_var = idx not in unfixed_variables and idx in node_indices
-            accept_mask.append(fix_var)
+        fixed_idxs = np.delete(node_indices, np.array(list(unfixed_variables)))
+        # Fix all binary vars except the <num_top_vars> with highest likelihood of taking 1
+        # Leave the non-binary vars unfixed, too.
+        # most variables will be zero in binary programs, so only want to solve those likely not to be
+        accept_mask = [idx in fixed_idxs for idx in range(len(var_names))]
 
         var_names_to_assign = []
         var_values_to_assign = []
@@ -205,8 +204,7 @@ class RepeatedCompetitionSampler(BaseSampler):
                 var_names_to_assign.append(var_name)
                 var_values_to_assign.append(val)
 
-        return Assignment(
-            var_names_to_assign, var_values_to_assign, var_values_to_assign)
+        return Assignment(var_names_to_assign, var_values_to_assign, var_values_to_assign)
 
 
 SAMPLER_DICT = {

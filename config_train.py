@@ -14,6 +14,7 @@
 # ============================================================================
 """Configuration parameters for Neural LNS training."""
 
+import os
 import ml_collections
 
 
@@ -23,7 +24,7 @@ def get_light_gnn_model_config():
 
     # Tunable parameters
     config.params = ml_collections.ConfigDict()
-    config.params.n_layers = 2  # GCN and output MLP layers
+    config.params.n_layers = 2  # GCN and output MLP layers (layer <=> set of weights)
     config.params.node_model_hidden_sizes = [64, 64]  # output width of each layer in GCN
     config.params.output_model_hidden_sizes = [32, 1]  # output width of each MLP layer (output model)
     config.params.dropout = 0.1
@@ -34,24 +35,27 @@ def get_light_gnn_model_config():
 def get_config():
     """Training configuration."""
     config = ml_collections.ConfigDict()
-    config.work_unit_dir = '/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/models'
+    config.work_unit_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'models')
 
     # Training config
     config.learning_rate = 1e-2
     config.decay_steps = 300
     config.num_train_run_steps = 10
-    config.num_train_steps = 1000
+    config.num_train_steps = 30  # was 1000
     config.eval_every_steps = 500
     config.eval_steps = 128
     config.grad_clip_norm = 1.0
 
     # Each entry is a pair of (<dataset_path>, <prefix>).
+    sample_train = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                'data/samples/cauctions/train_100_500')
+    sample_valid = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                'data/samples/cauctions/valid_100_500')
     config.train_datasets = [
-        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/example.tfrecord', 'train'),
+        (os.path.join(sample_train, instance), 'train') for instance in os.listdir(sample_train)
     ]
-
     config.valid_datasets = [
-        ('/Users/sean/Documents/school/phd/courses/deep_learning/neural_lns/data/example.tfrecord', 'valid'),
+        (os.path.join(sample_train, instance), 'valid') for instance in os.listdir(sample_valid)
     ]
     config.model_config = get_light_gnn_model_config()
     return config
